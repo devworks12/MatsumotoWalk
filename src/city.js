@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/BufferGeometryUtils.js';
-import { U, createBuildingMaterial, litMaterial, createWaterMaterial, createMountainMaterial, onNightChange, patchDim } from './materials.js';
+import { U, createBuildingMaterial, litMaterial, createWaterMaterial, createMountainMaterial, onNightChange, patchDim, radialTexture } from './materials.js';
 import { mulberry32 } from './util.js';
 import { WORLD } from './config.js';
 
@@ -251,11 +251,11 @@ export class City {
       return m;
     };
     this.mats = {
-      sidewalk: litMaterial(0xb7b0a4, { polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }),
-      road: litMaterial(0x3c3e43, { roughness: 0.95, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
-      paving: litMaterial(0xa89f90, { polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
-      plaza: litMaterial(0xc4bcad, { map: plazaTex, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
-      marks: litMaterial(0xe8e1d2, { polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }),
+      sidewalk: litMaterial(0xb7b0a4, { snow: 0.85, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }),
+      road: litMaterial(0x3c3e43, { roughness: 0.95, snow: 0.45, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
+      paving: litMaterial(0xa89f90, { snow: 0.7, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
+      plaza: litMaterial(0xc4bcad, { map: plazaTex, snow: 0.75, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
+      marks: litMaterial(0xe8e1d2, { snow: 0.4, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }),
       grass: litMaterial(0x9ca486, { polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }),
     };
     add(sidewalk.geometry(), this.mats.sidewalk);
@@ -317,8 +317,41 @@ export class City {
     posts.forEach(([x, z, r], i) => pm.setMatrixAt(i, compose(x, 0, z, r, 1, 1, 1)));
     pm.computeBoundingSphere();
     this.group.add(pm);
-    // bridge rails where streets cross the river
-    this.riverCrossings = [];
+    // Bridges: wherever a street crosses the river, a parapet on both sides and stone end posts
+    const rails = [], endPosts = [];
+    const segX = (a, b, c, d) => {
+      const rx = b[0] - a[0], rz = b[1] - a[1], sx = d[0] - c[0], sz = d[1] - c[1];
+      const den = rx * sz - rz * sx;
+      if (Math.abs(den) < 1e-9) return null;
+      const qx = c[0] - a[0], qz = c[1] - a[1];
+      const t = (qx * sz - qz * sx) / den, u = (qx * rz - qz * rx) / den;
+      return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? { x: a[0] + rx * t, z: a[1] + rz * t } : null;
+    };
+    const streets = [
+      ...this.roads.edges.map((e) => { const a = this.nodeById.get(e.from), b = this.nodeById.get(e.to); return { a: [a.x, a.z], b: [b.x, b.z], half: e.width / 2 + e.sidewalk }; }),
+      ...this.roads.decor.map(([x0, z0, x1, z1, w]) => ({ a: [x0, z0], b: [x1, z1], half: w / 2 + 1.5 })),
+    ];
+    for (const st of streets) {
+      for (let i = 0; i < points.length - 1; i++) {
+        const hit = segX(st.a, st.b, points[i], points[i + 1]);
+        if (!hit) continue;
+        const len = Math.hypot(st.b[0] - st.a[0], st.b[1] - st.a[1]);
+        const dx = (st.b[0] - st.a[0]) / len, dz = (st.b[1] - st.a[1]) / len;
+        const span = width + 7;
+        for (const side of [-1, 1]) {
+          const ox = -dz * side * (st.half + 0.25), oz = dx * side * (st.half + 0.25);
+          rails.push({ x: hit.x + ox, z: hit.z + oz, ry: Math.atan2(dx, dz), len: span });
+          for (const end of [-1, 1]) endPosts.push({ x: hit.x + ox + dx * end * span / 2, z: hit.z + oz + dz * end * span / 2 });
+        }
+      }
+    }
+    const railMat = litMaterial(0xb3ada2, { snow: 0.9 });
+    const railMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.35, 1.0, 1).translate(0, 0.62, 0), railMat, rails.length);
+    rails.forEach((r, i) => railMesh.setMatrixAt(i, compose(r.x, 0, r.z, r.ry, 1, 1, r.len)));
+    const postMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.6, 1.5, 0.6).translate(0, 0.75, 0), litMaterial(0x8e897f), endPosts.length);
+    endPosts.forEach((p, i) => postMesh.setMatrixAt(i, compose(p.x, 0, p.z, 0, 1, 1, 1)));
+    for (const m of [railMesh, postMesh]) { m.castShadow = true; m.computeBoundingSphere(); this.group.add(m); }
+    this.bridgeCount = rails.length / 2;
   }
 
   // ---------------------------------------------------------------------------
@@ -489,9 +522,19 @@ export class City {
       g.add(mesh);
       return mesh;
     };
-    // main hall (east / お城口)
+    // main hall (east / お城口): a long, low station building with a thin roof plate that overhangs the facade
     box(34, 19, 120, 12, 0, 0, concrete);
     box(36, 1.2, 122, 12, 19, 0, darkStone);
+    box(48, 0.8, 128, 16, 20.2, 0, canopyMat);
+    // vertical fins on the plaza facade either side of the glass atrium (cast long morning shadows)
+    for (let i = 0; i < 9; i++) {
+      for (const side of [-1, 1]) {
+        const zz = side * (25 + i * 3.9);
+        box(1.8, 17.5, 0.45, 29.6, 0.6, zz, concrete);
+      }
+    }
+    // horizontal louvre band above the entrance
+    for (let k = 0; k < 4; k++) box(1.2, 0.25, 116, 29.2, 17.4 + k * 0.45, 0, darkStone);
     // glazed atrium facing the plaza
     const atrium = box(10, 17, 42, 31, 0, 0, glass);
     // mullions
@@ -509,6 +552,7 @@ export class City {
     // west (アルプス口) entrance
     box(18, 14, 52, -118, 0, 0, concrete);
     box(4, 11, 28, -128, 0, 0, glass);
+    box(26, 0.7, 60, -122, 14, 0, canopyMat); // アルプス口 roof plate
     // rooftop equipment
     box(8, 3, 14, 6, 20.2, 30, darkStone);
     box(6, 2.5, 8, 18, 20.2, -12, darkStone);
@@ -580,53 +624,212 @@ export class City {
     moat.quad([-115, -105], [115, -105], [115, 105], [-115, 105], Y.water);
     const lawnMesh = new THREE.Mesh(lawn.geometry(), litMaterial(0x9ca486));
     const moatMesh = new THREE.Mesh(moat.geometry(), createWaterMaterial());
+    lawnMesh.receiveShadow = moatMesh.receiveShadow = true;
     g.add(lawnMesh, moatMesh);
-    // island with stone walls
-    const stone = litMaterial(0x8b867d);
-    const island = new THREE.Mesh(new THREE.BoxGeometry(170, 3, 150).translate(0, 1.5, 0), stone);
-    const islandTop = new THREE.Mesh(new THREE.BoxGeometry(168, 0.1, 148).translate(0, 3.05, 0), litMaterial(0xa4ab8f));
+
+    // textures: 石垣 (irregular dressed stones) and 下見板 (black clapboard)
+    const stoneTex = canvasTexture(256, 128, (c, w, h) => {
+      c.fillStyle = '#7d786f'; c.fillRect(0, 0, w, h);
+      const R = mulberry32(17);
+      for (let row = 0; row < 8; row++) {
+        let x = -R() * 20;
+        const y = row * 16;
+        while (x < w) {
+          const sw = 18 + R() * 22;
+          const t = 100 + Math.floor(R() * 40);
+          c.fillStyle = `rgb(${t + 12},${t + 8},${t})`;
+          c.fillRect(x + 1.5, y + 1.5, sw - 3, 13);
+          x += sw;
+        }
+      }
+    });
+    stoneTex.wrapS = stoneTex.wrapT = THREE.RepeatWrapping;
+    const boardTex = canvasTexture(64, 64, (c, w, h) => {
+      c.fillStyle = '#1f2023'; c.fillRect(0, 0, w, h);
+      c.fillStyle = 'rgba(255,255,255,0.06)';
+      for (let y = 0; y < h; y += 8) c.fillRect(0, y, w, 1);
+      c.fillStyle = 'rgba(0,0,0,0.35)';
+      for (let x = 0; x < w; x += 16) c.fillRect(x, 0, 1.5, h);
+    });
+    boardTex.wrapS = boardTex.wrapT = THREE.RepeatWrapping;
+    boardTex.repeat.set(4, 1.5);
+
+    // frustum: a box whose top is pulled in (石垣の反り approximated by a straight batter)
+    const frustum = (wb, db, h, inset) => {
+      const geo = new THREE.BoxGeometry(wb, h, db).translate(0, h / 2, 0);
+      const p = geo.attributes.position;
+      for (let i = 0; i < p.count; i++) if (p.getY(i) > h / 2) { p.setX(i, p.getX(i) * (1 - (2 * inset) / wb)); p.setZ(i, p.getZ(i) * (1 - (2 * inset) / db)); }
+      geo.computeVertexNormals();
+      return geo;
+    };
+    const stoneMat = (rx, ry) => { const t = stoneTex.clone(); t.needsUpdate = true; t.repeat.set(rx, ry); const m = litMaterial(0xffffff, { map: t, emissiveMap: t, roughness: 0.95 }); m.userData.stone = true; return m; };
+
+    // the main enclosure (本丸) rising from the moat
+    const island = new THREE.Mesh(frustum(172, 152, 4.2, 2.2), stoneMat(28, 1));
+    const islandTop = new THREE.Mesh(new THREE.BoxGeometry(166, 0.12, 146).translate(0, 4.25, 0), litMaterial(0xa7ad92));
     island.receiveShadow = islandTop.receiveShadow = true;
     g.add(island, islandTop);
-    // keep (天守): black walls, white bands, layered hip roofs
-    const black = litMaterial(0x232427);
-    const white = litMaterial(0xece8df);
-    const roof = litMaterial(0x3b3e44, { flatShading: true });
-    const keep = new THREE.Group();
-    keep.position.set(-14, 3, -8);
-    const base = new THREE.Mesh(new THREE.CylinderGeometry(15, 19, 8, 4, 1).rotateY(Math.PI / 4).translate(0, 4, 0), stone);
-    base.scale.set(1, 1, 0.85);
-    keep.add(base);
-    let y = 8;
-    const tiers = [[24, 20, 6.2], [21, 17, 5.2], [17.5, 14, 4.8], [14, 11, 4.4], [10.5, 8.5, 4.6]];
-    tiers.forEach(([w, d, h], i) => {
-      const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d).translate(0, h / 2, 0), black);
-      body.position.y = y;
-      const band = new THREE.Mesh(new THREE.BoxGeometry(w + 0.1, h * 0.3, d + 0.1).translate(0, h * 0.85, 0), white);
-      band.position.y = y;
-      const r = new THREE.Mesh(new THREE.CylinderGeometry(0.6, Math.SQRT1_2 * (w + 5), i === tiers.length - 1 ? 5.5 : 2.6, 4, 1).rotateY(Math.PI / 4).translate(0, 1.3, 0), roof);
-      r.scale.set(1, 1, (d + 5) / (w + 5));
-      r.position.y = y + h - 0.6;
-      [body, band, r].forEach((m) => { m.castShadow = true; keep.add(m); });
-      y += h;
+
+    const black = litMaterial(0xffffff, { map: boardTex, roughness: 0.6, snow: 0 });
+    const white = litMaterial(0xeeeae1, { snow: 0 });
+    const roof = litMaterial(0x4a4e55, { flatShading: true, roughness: 0.65 });
+    const redRail = litMaterial(0x9c3b2e);
+
+    // hip roof with flared eaves: a 4-sided frustum, optionally with a triangular 千鳥破風 on the long sides
+    const hipRoof = (w, d, h, gable) => {
+      const grp = new THREE.Group();
+      const r = new THREE.Mesh(new THREE.CylinderGeometry(0.55, Math.SQRT1_2 * (w + 4.5), h, 4, 1).rotateY(Math.PI / 4).translate(0, h / 2, 0), roof);
+      r.scale.set(1, 1, (d + 4.5) / (w + 4.5));
+      grp.add(r);
+      if (gable) {
+        const tri = new THREE.Shape();
+        tri.moveTo(-w * 0.18, 0); tri.lineTo(w * 0.18, 0); tri.lineTo(0, h * 1.25); tri.closePath();
+        const tg = new THREE.ExtrudeGeometry(tri, { depth: 1.2, bevelEnabled: false });
+        for (const side of [-1, 1]) {
+          const m = new THREE.Mesh(tg, white);
+          m.position.set(0, h * 0.05, side * (d / 2 + 1.4) - (side > 0 ? 1.2 : 0));
+          grp.add(m);
+          const cap = new THREE.Mesh(new THREE.BoxGeometry(w * 0.42, 0.35, 1.9).translate(0, 0, 0), roof);
+          cap.position.set(0, h * 0.62, side * (d / 2 + 0.9));
+          cap.rotation.z = 0;
+          grp.add(cap);
+        }
+      }
+      return grp;
+    };
+    const tower = (tiers, baseW, baseD, baseH, opts = {}) => {
+      const grp = new THREE.Group();
+      const base = new THREE.Mesh(frustum(baseW, baseD, baseH, 1.6), stoneMat(4, 1));
+      base.castShadow = base.receiveShadow = true;
+      grp.add(base);
+      let y = baseH;
+      tiers.forEach(([w, d, h, gable], i) => {
+        const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d).translate(0, h / 2, 0), black);
+        body.position.y = y;
+        const band = new THREE.Mesh(new THREE.BoxGeometry(w + 0.12, h * 0.34, d + 0.12).translate(0, h * 0.83, 0), white);
+        band.position.y = y;
+        // small windows in the white band
+        const top = i === tiers.length - 1;
+        const r = hipRoof(w, d, top ? 4.8 : 2.4, gable);
+        r.position.y = y + h - 0.5;
+        [body, band].forEach((m) => { m.castShadow = true; grp.add(m); });
+        r.traverse((m) => { if (m.isMesh) m.castShadow = true; });
+        grp.add(r);
+        y += h;
+        if (top && opts.finials) {
+          for (const sx of [-1, 1]) {
+            const f = new THREE.Mesh(new THREE.ConeGeometry(0.35, 1.4, 6), litMaterial(0xb08a4a, { metalness: 0.5, roughness: 0.4 }));
+            f.position.set(sx * 1.6, y + 4.6, 0);
+            grp.add(f);
+          }
+        }
+      });
+      grp.userData.top = y;
+      return grp;
+    };
+
+    // 大天守 (five roofs), 乾小天守 to the north-west, 辰巳附櫓 and 月見櫓 to the south-east
+    const keep = tower([[24, 20, 6.2, false], [21, 17.5, 5.2, true], [18, 14.5, 4.8, false], [14.5, 11.5, 4.4, true], [11, 9, 4.6, false]], 30, 26, 7, { finials: true });
+    keep.position.set(-14, 4.2, -8);
+    const inui = tower([[13, 11, 5.4, false], [10.5, 8.5, 4.6, true], [8, 6.5, 4.0, false]], 17, 15, 6);
+    inui.position.set(-42, 4.2, -26);
+    const watari = new THREE.Mesh(new THREE.BoxGeometry(16, 6.5, 6.5).translate(0, 3.25, 0), black);
+    watari.position.set(-28, 10.2, -17);
+    watari.rotation.y = -0.55;
+    const watariRoof = hipRoof(16, 6.5, 2.2, false);
+    watariRoof.position.set(-28, 16.2, -17);
+    watariRoof.rotation.y = -0.55;
+    const tatsumi = tower([[11, 9, 5.0, false], [8.5, 7, 4.2, false]], 14, 12, 7);
+    tatsumi.position.set(6, 4.2, 6);
+    // 月見櫓: open-sided pavilion with a red railing (it was built for moon viewing)
+    const tsukimi = new THREE.Group();
+    const tsBase = new THREE.Mesh(frustum(16, 12, 4.5, 1.0), stoneMat(3, 1));
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(13, 0.5, 9).translate(0, 4.75, 0), litMaterial(0x5a4637));
+    tsukimi.add(tsBase, deck);
+    for (const [px, pz] of [[-6, -4], [6, -4], [-6, 4], [6, 4], [0, 4], [0, -4], [-6, 0], [6, 0]]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.4, 4.2, 0.4).translate(0, 7.1, 0), black);
+      post.position.set(px, 0, pz);
+      tsukimi.add(post);
+    }
+    for (const [w, d, x, z] of [[13, 0.2, 0, 4.4], [13, 0.2, 0, -4.4], [0.2, 9, 6.4, 0], [0.2, 9, -6.4, 0]]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(w, 0.18, d).translate(x, 6.0, z), redRail);
+      tsukimi.add(rail);
+    }
+    const tsRoof = hipRoof(13, 9, 3.0, false);
+    tsRoof.position.y = 9.2;
+    tsukimi.add(tsRoof);
+    tsukimi.position.set(20, 4.2, 18);
+    tsukimi.traverse((m) => { if (m.isMesh) m.castShadow = true; });
+    g.add(keep, inui, watari, watariRoof, tatsumi, tsukimi);
+
+    // red bridge (埋橋) over the moat, with a gently arched deck and railings
+    const arch = new THREE.Group();
+    for (let i = 0; i < 10; i++) {
+      const t = (i + 0.5) / 10;
+      const seg = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.5, 3.1), redRail);
+      seg.position.set(0, 1.4 + Math.sin(t * Math.PI) * 1.4, -15 + t * 30);
+      seg.rotation.x = -Math.cos(t * Math.PI) * 0.15;
+      arch.add(seg);
+      for (const sx of [-1, 1]) {
+        const r = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.9, 3.1), redRail);
+        r.position.set(sx * 2.25, seg.position.y + 0.65, seg.position.z);
+        r.rotation.x = seg.rotation.x;
+        arch.add(r);
+      }
+    }
+    arch.position.set(30, 0, 90);
+    g.add(arch);
+
+    // night illumination: walls glow, light pools on the stone walls, soft up-light
+    // small floodlight pools at the foot of each tower, and lanterns along the moat path
+    const pool = radialTexture(128, 'rgba(255,214,160,1)', 'rgba(255,190,120,0)');
+    const upMat = new THREE.MeshBasicMaterial({ map: pool, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 });
+    for (const [x, z, sz] of [[-14, 12, 14], [-14, -28, 14], [6, -8, 12], [-34, -8, 12], [-42, -34, 9], [6, 16, 8], [20, 30, 8]]) {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(sz, sz), upMat);
+      m.position.set(x, 4.35, z);
+      m.rotation.x = -Math.PI / 2;
+      m.renderOrder = 2;
+      g.add(m);
+    }
+    const lampMat = new THREE.MeshBasicMaterial({ color: 0x777777 });
+    const lampSpots = [];
+    for (let i = 0; i < 44; i++) {
+      const t = i / 44, a = t * Math.PI * 2;
+      lampSpots.push([Math.cos(a) * 122, Math.sin(a) * 112]);
+    }
+    const lamps = new THREE.InstancedMesh(new THREE.BoxGeometry(0.4, 1.1, 0.4).translate(0, 0.6, 0), lampMat, lampSpots.length);
+    lampSpots.forEach(([x, z], i) => lamps.setMatrixAt(i, compose(x, 0, z, 0, 1, 1, 1)));
+    lamps.computeBoundingSphere();
+    g.add(lamps);
+    // the reflection of the lit keep in the moat (a soft vertical streak on the water)
+    const reflMat = new THREE.MeshBasicMaterial({ map: radialTexture(128, 'rgba(255,220,170,1)', 'rgba(255,200,140,0)'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 });
+    const refl = new THREE.Mesh(new THREE.PlaneGeometry(26, 70), reflMat);
+    refl.rotation.x = -Math.PI / 2;
+    refl.position.set(-14, Y.water + 0.05, 128);
+    g.add(refl);
+    const beamMat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+      uniforms: { uAlpha: { value: 0 } },
+      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+      fragmentShader: 'uniform float uAlpha; varying vec2 vUv; void main(){ float a = pow(1.0 - vUv.y, 3.0) * 0.05 * uAlpha; gl_FragColor = vec4(vec3(1.0, 0.82, 0.6) * a, a); }',
     });
-    // smaller turret (乾小天守) linked by a corridor
-    const turret = new THREE.Group();
-    turret.position.set(-38, 3, -20);
-    const tb = new THREE.Mesh(new THREE.BoxGeometry(12, 13, 10).translate(0, 6.5, 0), black);
-    const tbBand = new THREE.Mesh(new THREE.BoxGeometry(12.1, 3, 10.1).translate(0, 11.5, 0), white);
-    const tr = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 11, 4.5, 4, 1).rotateY(Math.PI / 4).translate(0, 15, 0), roof);
-    turret.add(tb, tbBand, tr);
-    const corridor = new THREE.Mesh(new THREE.BoxGeometry(14, 7, 6).translate(-26, 6.5, -14), black);
-    g.add(keep, turret, corridor);
-    // red bridge (埋橋) over the moat
-    const bridge = new THREE.Mesh(new THREE.BoxGeometry(5, 0.8, 30).translate(30, 1.6, 90), litMaterial(0x9c3b2e));
-    g.add(bridge);
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(14, 19, 34, 24, 1, true).translate(0, 17, 0), beamMat);
+    beam.position.set(-14, 4.2, -8);
+    g.add(beam);
+
     this.group.add(g);
     this.castle = g;
-    // Night illumination: castle walls glow softly
+    const stoneLit = new Set();
+    g.traverse((m) => { if (m.isMesh && m.material.userData.stone) stoneLit.add(m.material); });
     onNightChange((t) => {
-      white.emissive.setRGB(0.9, 0.82, 0.68).multiplyScalar(t * 0.55);
-      black.emissive.setRGB(0.25, 0.18, 0.1).multiplyScalar(t * 0.35);
+      white.emissive.setRGB(1.0, 0.88, 0.72).multiplyScalar(t * 1.0);
+      black.emissive.setRGB(0.42, 0.3, 0.2).multiplyScalar(t * 0.28);
+      for (const m of stoneLit) m.emissive.setRGB(0.5, 0.4, 0.28).multiplyScalar(t * 0.22);
+      upMat.opacity = t * 0.6;
+      reflMat.opacity = t * 0.35;
+      lampMat.color.setRGB(0.47 + 2.0 * t, 0.47 + 1.4 * t, 0.47 + 0.6 * t);
+      beamMat.uniforms.uAlpha.value = t;
+      beam.visible = t > 0.02;
     });
   }
 
@@ -640,16 +843,37 @@ export class City {
       for (let i = 0; i < 5; i++) { v += amp * (1 - Math.abs(Math.sin(a * f + phases[i]))); amp *= 0.5; f *= 2.1; }
       return v / 1.94;
     };
+    // Bearings from Matsumoto (clockwise from north) → angle in this scene's ring (x = cos a, z = sin a, +z = south).
+    const ang = (bearingDeg) => { const b = (bearingDeg * Math.PI) / 180; return Math.atan2(-Math.cos(b), Math.sin(b)); };
+    const near = (a, c) => Math.abs(wrapA(a - c));
+    const pyramid = (a, c, w, h) => { const d = near(a, c); return d < w ? h * Math.pow(1 - d / w, 1.25) : 0; };
+    const dome = (a, c, w, h) => { const d = near(a, c) / w; return d < 1 ? h * Math.sqrt(1 - d * d) : 0; };
+    const A = {
+      jonen: ang(284),   // 常念岳: the pyramid you see from the city
+      yari: ang(301),    // 槍ヶ岳: a thin spear peeking over the front range
+      hotaka: ang(292),  // 穂高連峰 behind 常念
+      norikura: ang(247),// 乗鞍岳: broad dome to the south-west
+      utsukushi: ang(80),// 美ヶ原: flat-topped plateau to the east
+      hachibuse: ang(150)// 鉢伏山 to the south-east
+    };
     const layers = [
-      { R: 5600, N: 900, layer: 1, height: (a) => {
-        // Northern Alps to the west (a≈π), with a pointed 常念岳-like peak slightly north of west.
-        const west = Math.pow(Math.max(0, -Math.cos(a)), 0.7);
-        const east = Math.pow(Math.max(0, Math.cos(a)), 1.2);
-        const peak = 520 * Math.exp(-Math.pow((wrapA(a - (Math.PI + 0.22))) / 0.05, 2));
-        const alps = (650 + 520 * noise(a, 9)) * west + peak;
-        const plateau = (420 + 60 * noise(a, 22)) * east; // 美ヶ原-like flat top
-        return 240 + 120 * noise(a, 14) + Math.max(alps, plateau);
+      // far range: 穂高 – 槍 ridge line behind the front range
+      { R: 7600, N: 1400, layer: 1, height: (a) => {
+        const sector = Math.max(0, 1 - near(a, (A.hotaka + A.yari) / 2) / 0.32);
+        const ridge = sector > 0 ? (1050 + 380 * noise(a, 34)) * Math.pow(sector, 0.6) : 0;
+        return Math.max(ridge, pyramid(a, A.yari, 0.034, 1700), pyramid(a, A.hotaka, 0.07, 1560) * (0.9 + 0.1 * noise(a, 60)));
       } },
+      // main range: 常念 front range to the west, 乗鞍 to the south-west, 美ヶ原 plateau to the east
+      { R: 5600, N: 1100, layer: 0.75, height: (a) => {
+        const west = Math.pow(Math.max(0, -Math.cos(a)), 0.7);
+        const front = (560 + 380 * noise(a, 11)) * west;
+        const jonen = pyramid(a, A.jonen, 0.085, 1480) + pyramid(a, A.jonen + 0.11, 0.06, 1180);
+        const norikura = dome(a, A.norikura, 0.14, 1260) * (0.92 + 0.08 * noise(a, 40));
+        const plateau = near(a, A.utsukushi) < 0.42 ? 620 + 30 * noise(a, 30) - 380 * Math.pow(Math.max(0, near(a, A.utsukushi) - 0.3) / 0.12, 2) : 0;
+        const hachibuse = dome(a, A.hachibuse, 0.12, 560);
+        return 200 + 110 * noise(a, 14) + Math.max(front, jonen, norikura, plateau, hachibuse);
+      } },
+      // foothills around the basin
       { R: 3900, N: 700, layer: 0, height: (a) => 120 + 240 * noise(a + 1.3, 17) * (0.6 + 0.4 * Math.abs(Math.cos(a))) },
     ];
     for (const L of layers) {

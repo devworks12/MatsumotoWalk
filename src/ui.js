@@ -201,11 +201,14 @@ export class UI {
   setSetting(key, value) {
     document.querySelectorAll(`.seg[data-setting="${key}"] button`).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.value === value)));
   }
-  setNightIcon(night) {
+  /** phase: dawn | day | dusk | night; auto: following the real clock. */
+  setTimeIcon(phase, auto, weather = 'clear') {
     const b = $('btn-daynight');
-    b.innerHTML = svgIcon(night ? 'moon' : 'sun');
-    b.setAttribute('aria-label', night ? '昼に切り替え' : '夜に切り替え');
-    b.classList.toggle('on', night);
+    const icon = weather !== 'clear' ? weather : { dawn: 'sunrise', day: 'sun', dusk: 'sunset', night: 'moon' }[phase];
+    b.innerHTML = svgIcon(icon) + (auto ? '<span class="auto-dot" aria-hidden="true"></span>' : '');
+    const ja = { dawn: '朝焼け', day: '昼', dusk: '夕焼け', night: '夜' }[phase];
+    b.setAttribute('aria-label', `時間帯を切り替え（現在：${auto ? '自動・' : ''}${ja}）`);
+    b.classList.toggle('on', phase === 'night' || phase === 'dusk');
   }
 
   // ------------------------------------------------------------------ explore

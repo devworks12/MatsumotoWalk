@@ -12,6 +12,8 @@ import { RouteLine } from './routeLine.js';
 import { CameraDirector, defaultView } from './cameraTour.js';
 import { UI } from './ui.js';
 import { Ambience } from './audio.js';
+import { Precipitation } from './weather.js';
+import { TIME_PRESETS, TIME_ORDER } from './atmosphere.js';
 import { renderFallback } from './fallback2d.js';
 import { U } from './materials.js';
 import { CATEGORIES, FILTERS, WORLD } from './config.js';
@@ -27,6 +29,8 @@ class App {
       labels: store.get('labels', 'auto'),
       motion: store.get('motion', 'system'),
       sound: 'off',
+      time: store.get('time', 'auto'),
+      weather: store.get('weather', 'clear'),
     };
     this.dimTarget = 0;
     this.glowTarget = 0;
@@ -41,7 +45,7 @@ class App {
 
   async start() {
     this.ui = new UI(this._handlers());
-    for (const k of ['quality', 'labels', 'motion', 'sound']) this.ui.setSetting(k, this.settings[k]);
+    for (const k of ['quality', 'labels', 'motion', 'sound', 'time', 'weather']) this.ui.setSetting(k, this.settings[k]);
     this.ui.setLoading(0.04, 'Fetching the map…');
 
     const data = await this._load();
@@ -82,11 +86,12 @@ class App {
     this.director = new CameraDirector(this.stage, this.controls);
     this.ambience = new Ambience();
 
-    // Day / night follows the clock in Matsumoto on first load
-    const { minutes } = tokyoNow();
-    const night = store.get('night', minutes >= 17.5 * 60 || minutes < 5.5 * 60);
-    this.stage.applyNightImmediately(night);
-    this.ui.setNightIcon(night);
+    // Time of day (AUTO follows the clock in Matsumoto) and weather
+    this.precip = new Precipitation(this.stage.scene);
+    this.stage.atmo.set(this.settings.time, this.settings.weather);
+    this.stage.atmo.snap();
+    this.precip.setWeather(this.settings.weather);
+    this._syncTimeIcon();
 
     this.ui.renderFilters('all', this._counts());
     this._applyView(defaultView(this.stage));
@@ -267,6 +272,8 @@ class App {
     this.city.update(dt, this.camera, camDist);
     this.props.updateSignals(dt);
     this.street.update(camDist, U.uPov.value);
+    this.precip.update(dt, this.camera, camDist, this.stage.height * this.stage.dpr);
+    if (this.settings.time === 'auto' && (this._iconT = (this._iconT || 0) - dt) < 0) { this._iconT = 30; this._syncTimeIcon(); }
     this.traffic.update(dt);
     this.shops.update(dt, this.camera, { pov: this.director.inTour, dimShaft: this.director.inTour });
     this.routeLine.update(dt, camDist, U.uPov.value);
@@ -316,6 +323,29 @@ class App {
     for (let i = 0; i < p.x.length; i += 8) pts.push([p.x[i], p.z[i]]);
     pts.push([p.end.x, p.end.z], [WORLD.station.x, WORLD.station.z]);
     return this.director.flyTo(this.director.viewFor(pts, { minR: 160, phi: 0.82, panel: this._panelInset() }), this.reduced ? 0.3 : dur);
+  }
+
+  _setTime(mode) {
+    this.settings.time = mode;
+    store.set('time', mode);
+    this.ui.setSetting('time', mode);
+    this.stage.atmo.set(mode);
+    this.ambience?.setNight(this.stage.isNight);
+    this._syncTimeIcon();
+  }
+
+  _setWeather(w) {
+    this.settings.weather = w;
+    store.set('weather', w);
+    this.ui.setSetting('weather', w);
+    this.stage.atmo.set(null, w);
+    this.precip.setWeather(w);
+    this.ambience?.setWeather(w);
+    this._syncTimeIcon();
+  }
+
+  _syncTimeIcon() {
+    this.ui.setTimeIcon(this.stage.atmo.phase, this.settings.time === 'auto', this.settings.weather);
   }
 
   /** Screen pixels covered by the side panel (desktop / landscape), so routes are framed in the free area. */
@@ -589,18 +619,20 @@ class App {
         if (!this.state.selected) this.dimTarget = 0;
       },
       onDayNight: () => {
-        const night = !this.stage.isNight;
-        this.stage.setNight(night);
-        this.ui.setNightIcon(night);
-        this.ambience?.setNight(night);
-        store.set('night', night);
+        // cycle the presets, starting from whatever is on screen now
+        const cur = this.stage.atmo.phase;
+        const next = TIME_ORDER[(TIME_ORDER.indexOf(cur) + 1) % TIME_ORDER.length];
+        this._setTime(next);
+        this.ui.toast(`${TIME_PRESETS[next].ja} · ${TIME_PRESETS[next].label}`, 1400);
       },
       onSetting: (k, v) => {
         this.settings[k] = v;
         if (k !== 'sound') store.set(k, v);
         if (k === 'quality') this.stage?.setQuality(v);
         if (k === 'labels') this.shops?.setLabelMode(v);
-        if (k === 'sound') { this.ambience?.setEnabled(v === 'on'); this.ambience?.setNight(this.stage?.isNight); }
+        if (k === 'sound') { this.ambience?.setEnabled(v === 'on'); this.ambience?.setNight(this.stage?.isNight); this.ambience?.setWeather(this.settings.weather); }
+        if (k === 'time') this._setTime(v);
+        if (k === 'weather') this._setWeather(v);
       },
       onResetView: () => {
         if (this.director?.inTour) this._leaveTour(false);

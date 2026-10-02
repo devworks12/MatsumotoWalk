@@ -83,7 +83,7 @@ export class Props {
     for (let i = 0; i < pts.length - 1; i++) {
       const [ax, az] = pts[i], [bx, bz] = pts[i + 1];
       const len = Math.hypot(bx - ax, bz - az), dx = (bx - ax) / len, dz = (bz - az) / len;
-      for (let s = 5; s < len - 5; s += 13) {
+      for (let s = 4; s < len - 4; s += 8.5) {
         for (const side of [-1, 1]) {
           const o = roads.river.width / 2 + 3.6;
           const x = ax + dx * s - dz * side * o, z = az + dz * s + dx * side * o;
@@ -226,7 +226,7 @@ export class Props {
 
   updateSignals(dt) {
     // light pools: softer at street level so the POV never washes out
-    if (this.poolMat) this.poolMat.opacity = U.uNight.value * 0.3 * (1 - 0.45 * U.uPov.value);
+    if (this.poolMat) this.poolMat.opacity = U.uNight.value * 0.3 * (1 - 0.45 * U.uPov.value) * (1 + 0.9 * U.uWet.value); // wet streets mirror the lamps
     this.signalTimer -= dt;
     if (this.signalTimer > 0 || !this.signalLamp) return;
     this.signalTimer = 0.5;

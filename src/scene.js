@@ -3,21 +3,12 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { U, emitNight, createSkyMaterial } from './materials.js';
-import { damp, clamp } from './util.js';
+import { U, createSkyMaterial } from './materials.js';
+import { clamp } from './util.js';
+import { Atmosphere } from './atmosphere.js';
 
-const DAY = {
-  hemiSky: new THREE.Color(0xe7ebef), hemiGround: new THREE.Color(0x9a8e7c), hemi: 1.15,
-  sun: new THREE.Color(0xfff0dc), sunI: 2.9,
-  fog: new THREE.Color(0xd8d2c7), fogNear: 1500, fogFar: 6500,
-  exposure: 0.95, bloom: 0.22, threshold: 0.95,
-};
-const NIGHT = {
-  hemiSky: new THREE.Color(0x2a3b63), hemiGround: new THREE.Color(0x0b0d14), hemi: 0.42,
-  sun: new THREE.Color(0x9fb4e0), sunI: 0.42,
-  fog: new THREE.Color(0x0f1628), fogNear: 1100, fogFar: 4800,
-  exposure: 1.05, bloom: 0.5, threshold: 0.88,
-};
+// Bloom defaults (the atmosphere overrides these every frame)
+const BLOOM = { strength: 0.22, threshold: 0.95 };
 
 /**
  * Renderer, camera, lights, sky, post-processing, day/night and adaptive resolution.
@@ -30,7 +21,7 @@ export class Stage {
       canvas, antialias: false, alpha: false, stencil: false, powerPreference: 'high-performance',
     });
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = DAY.exposure;
+    this.renderer.toneMappingExposure = 0.95;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.shadowMap.enabled = true;
     // PCF (not PCFSoft) on phones: noticeably cheaper per pixel at high DPR
@@ -38,16 +29,16 @@ export class Stage {
     this.renderer.shadowMap.autoUpdate = false; // static city: render shadows on demand only
 
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.Fog(DAY.fog.clone(), DAY.fogNear, DAY.fogFar);
+    this.scene.fog = new THREE.Fog(0xd8d2c7, 1500, 6500);
     this.scene.background = null;
 
     this.camera = new THREE.PerspectiveCamera(42, 1, 1, 12000);
     this.camera.position.set(800, 600, 500);
 
     // Lights
-    this.hemi = new THREE.HemisphereLight(DAY.hemiSky, DAY.hemiGround, DAY.hemi);
+    this.hemi = new THREE.HemisphereLight(0xe7ebef, 0x9a8e7c, 1.15);
     this.scene.add(this.hemi);
-    this.sun = new THREE.DirectionalLight(DAY.sun, DAY.sunI);
+    this.sun = new THREE.DirectionalLight(0xfff0dc, 2.9);
     this.sunOffset = new THREE.Vector3(-700, 600, 430);
     this.sun.target.position.set(380, 0, -220);
     this.sun.position.copy(this.sun.target.position).add(this.sunOffset);
@@ -64,7 +55,7 @@ export class Stage {
     this.sky.renderOrder = -10;
     this.scene.add(this.sky);
 
-    this.nightTarget = 0;
+    this.atmo = new Atmosphere(this);
     this.dpr = 1;
     this.fpsSamples = [];
     this.lastAdapt = 0;
@@ -83,7 +74,7 @@ export class Stage {
     });
     this.composer = new EffectComposer(this.renderer, rt);
     this.renderPass = new RenderPass(this.scene, this.camera);
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), DAY.bloom, 0.55, DAY.threshold);
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), BLOOM.strength, 0.55, BLOOM.threshold);
     this.output = new OutputPass();
     this.composer.addPass(this.renderPass);
     this.composer.addPass(this.bloom);
@@ -134,27 +125,7 @@ export class Stage {
     }
   }
 
-  setNight(on) { this.nightTarget = on ? 1 : 0; }
-  get isNight() { return this.nightTarget > 0.5; }
-
-  _applyNight(t) {
-    const L = (a, b) => a + (b - a) * t;
-    this.hemi.color.copy(DAY.hemiSky).lerp(NIGHT.hemiSky, t);
-    this.hemi.groundColor.copy(DAY.hemiGround).lerp(NIGHT.hemiGround, t);
-    this.hemi.intensity = L(DAY.hemi, NIGHT.hemi);
-    this.sun.color.copy(DAY.sun).lerp(NIGHT.sun, t);
-    this.sun.intensity = L(DAY.sunI, NIGHT.sunI);
-    this.scene.fog.color.copy(DAY.fog).lerp(NIGHT.fog, t);
-    U.uFogColor.value.copy(this.scene.fog.color);
-    this.scene.fog.near = L(DAY.fogNear, NIGHT.fogNear);
-    this.scene.fog.far = L(DAY.fogFar, NIGHT.fogFar);
-    this.renderer.toneMappingExposure = L(DAY.exposure, NIGHT.exposure);
-    this.bloomBase = L(DAY.bloom, NIGHT.bloom);
-    this.bloom.strength = this.bloomBase * (this.bloomScale ?? 1);
-    this.bloom.threshold = L(DAY.threshold, NIGHT.threshold);
-    U.uNight.value = t;
-    emitNight(t);
-  }
+  get isNight() { return this.atmo.isNight; }
 
   /** Adaptive resolution: drop DPR when frames are slow, recover slowly when fast. */
   _adapt(dt, now) {
@@ -175,12 +146,7 @@ export class Stage {
 
   update(dt, now) {
     U.uTime.value += dt;
-    const cur = U.uNight.value;
-    if (Math.abs(cur - this.nightTarget) > 0.001) {
-      const t = clamp(cur + Math.sign(this.nightTarget - cur) * dt / 1.6, 0, 1);
-      this._applyNight(t);
-      if (Math.abs(t - this.nightTarget) < 0.001) this.renderer.shadowMap.needsUpdate = true;
-    }
+    this.atmo.update(dt);
     // Near plane follows zoom level: keeps depth precision high (no z-fighting on road layers).
     this.sky.position.copy(this.camera.position);
     this._adapt(dt, now);
@@ -200,9 +166,4 @@ export class Stage {
     else this.renderer.render(this.scene, this.camera);
   }
 
-  applyNightImmediately(on) {
-    this.nightTarget = on ? 1 : 0;
-    this._applyNight(this.nightTarget);
-    this.renderer.shadowMap.needsUpdate = true;
-  }
 }

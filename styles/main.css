@@ -130,6 +130,9 @@ kbd { font-family: var(--font-latin); font-size: 11px; padding: 1px 5px; border:
 }
 .icon-btn:hover { border-color: var(--line-2); }
 .icon-btn[aria-expanded="true"], .icon-btn.on { color: var(--amber-ink); border-color: rgba(240, 162, 74, 0.35); }
+.top-actions .icon-btn { position: relative; }
+.auto-dot { position: absolute; right: 8px; top: 8px; width: 5px; height: 5px; border-radius: 50%; background: var(--amber); }
+.seg[data-setting="time"] button { padding: 0 8px; }
 .icon-btn.small { width: 36px; height: 36px; border-radius: 9px; background: transparent; border-color: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; }
 .icon-btn.small:hover { background: var(--panel-2); }
 :focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }

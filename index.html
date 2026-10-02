@@ -36,7 +36,7 @@
       </button>
       <div class="top-actions">
         <button class="icon-btn" id="btn-search" type="button" aria-label="お店を検索" aria-expanded="false"></button>
-        <button class="icon-btn" id="btn-daynight" type="button" aria-label="昼と夜を切り替え"></button>
+        <button class="icon-btn" id="btn-daynight" type="button" aria-label="時間帯を切り替え"></button>
         <button class="icon-btn" id="btn-settings" type="button" aria-label="設定" aria-expanded="false"></button>
       </div>
     </header>
@@ -58,6 +58,18 @@
     <!-- Settings -->
     <div class="settings panel ui-float" id="settings" hidden role="dialog" aria-label="設定">
       <div class="panel-head"><span class="eyebrow">SETTINGS</span><button class="icon-btn small" id="settings-close" type="button" aria-label="閉じる"></button></div>
+      <div class="setting">
+        <span class="setting-label">時間帯</span>
+        <div class="seg" data-setting="time">
+          <button type="button" data-value="auto">自動</button><button type="button" data-value="dawn">朝</button><button type="button" data-value="day">昼</button><button type="button" data-value="dusk">夕</button><button type="button" data-value="night">夜</button>
+        </div>
+      </div>
+      <div class="setting">
+        <span class="setting-label">天気</span>
+        <div class="seg" data-setting="weather">
+          <button type="button" data-value="clear">晴れ</button><button type="button" data-value="rain">雨</button><button type="button" data-value="snow">雪</button>
+        </div>
+      </div>
       <div class="setting">
         <span class="setting-label">画質</span>
         <div class="seg" data-setting="quality">

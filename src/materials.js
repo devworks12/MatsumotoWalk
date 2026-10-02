@@ -9,7 +9,54 @@ export const U = {
   uStationGlow: { value: 0 },
   uFogColor: { value: new THREE.Color(0xd9d3c8) }, // edge haze colour (follows scene fog)
   uPov: { value: 0 },          // 1 while the camera is at street level
+  // atmosphere (driven by src/atmosphere.js)
+  uSkyTop: { value: new THREE.Color(0x80a0b8) },
+  uSkyHor: { value: new THREE.Color(0xded6ca) },
+  uSunDir: { value: new THREE.Vector3(-0.6, 0.5, 0.4).normalize() },
+  uSunGlowCol: { value: new THREE.Color(0xffd9a0) },
+  uSunGlow: { value: 0.3 },
+  uStars: { value: 0 },
+  uWet: { value: 0 },          // 0..1 rain-soaked surfaces
+  uSnow: { value: 0 },         // 0..1 snow cover on up-facing surfaces
+  uMountain: { value: new THREE.Color(0x66727e) }, // mountain body colour
 };
+
+// Weather on up-facing surfaces: wet (darker + glossy + faint warm sheen at night) and snow cover.
+const WEATHER_VERT = `
+#ifdef USE_INSTANCING
+  // instances are rotation × non-uniform scale: inverse-transpose = M · S⁻²
+  mat3 mfwIM = mat3(instanceMatrix);
+  vec3 mfwS2 = vec3(dot(mfwIM[0], mfwIM[0]), dot(mfwIM[1], mfwIM[1]), dot(mfwIM[2], mfwIM[2]));
+  vMfwN = normalize(mat3(modelMatrix) * (mfwIM * (objectNormal / mfwS2)));
+#else
+  vMfwN = normalize(mat3(modelMatrix) * objectNormal);
+#endif`;
+function weatherFrag(snowK, wetK) {
+  return `
+{
+  float upF = smoothstep(0.45, 0.85, vMfwN.y);
+  float nz = fract(sin(dot(floor(vMfwW * 1.7), vec2(12.9898, 78.233))) * 43758.5453);
+  float wet = uWet * ${wetK.toFixed(2)} * upF;
+  diffuseColor.rgb *= 1.0 - 0.38 * wet;
+  roughnessFactor = mix(roughnessFactor, 0.2 + 0.25 * nz, wet);
+  float sn = uSnow * ${snowK.toFixed(2)} * upF * (0.78 + 0.22 * nz);
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.9, 0.92, 0.95), sn);
+  roughnessFactor = mix(roughnessFactor, 0.85, sn);
+  mfwWetSheen = wet;
+}`;
+}
+export function patchWeather(sh, snowK = 1, wetK = 1) {
+  sh.uniforms.uWet = U.uWet;
+  sh.uniforms.uSnow = U.uSnow;
+  sh.uniforms.uNightW = U.uNight;
+  sh.vertexShader = sh.vertexShader
+    .replace('#include <common>', '#include <common>\nvarying vec3 vMfwN;')
+    .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>' + WEATHER_VERT);
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <common>', '#include <common>\nuniform float uWet; uniform float uSnow; uniform float uNightW; varying vec3 vMfwN; float mfwWetSheen = 0.0;')
+    .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>' + weatherFrag(snowK, wetK))
+    .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += mfwWetSheen * uNightW * vec3(0.5, 0.3, 0.16) * 0.05;');
+}
 
 // Radial "edge haze": the miniature city melts into the atmosphere instead of ending at a hard edge.
 const EDGE_VERT = `
@@ -21,8 +68,9 @@ const EDGE_VERT = `
 vMfwW = mfwWP.xz;`;
 const EDGE_FRAG = `
 {
-  vec2 dq = (vMfwW - vec2(380.0, -230.0)) / vec2(980.0, 940.0);
-  float edge = smoothstep(0.62, 1.0, length(dq));
+  // the haze ellipse is centred so that Matsumoto Castle (north) stays inside the clear zone
+  vec2 dq = (vMfwW - vec2(380.0, -330.0)) / vec2(1000.0, 1060.0);
+  float edge = smoothstep(0.7, 1.04, length(dq));
   outgoingLight = mix(outgoingLight, uFogColor, edge);
 }`;
 export function patchEdge(sh) {
@@ -39,11 +87,12 @@ const nightListeners = new Set();
 export function onNightChange(fn) { nightListeners.add(fn); fn(U.uNight.value); }
 export function emitNight(v) { for (const fn of nightListeners) fn(v); }
 
-/** Adds the global "dim" uniform to any lit material. */
-export function patchDim(material, strength = 0.6) {
+/** Adds the global "dim" uniform (plus edge haze and weather) to any lit material. */
+export function patchDim(material, strength = 0.6, { snow = 0.9, wet = 1 } = {}) {
   const prev = material.onBeforeCompile;
   material.onBeforeCompile = (sh, r) => {
     prev?.call(material, sh, r);
+    if (snow > 0 || wet > 0) patchWeather(sh, snow, wet);
     sh.uniforms.uDim = U.uDim;
     sh.fragmentShader = 'uniform float uDim;\n' + sh.fragmentShader.replace(
       '#include <opaque_fragment>',
@@ -51,7 +100,7 @@ export function patchDim(material, strength = 0.6) {
     );
     patchEdge(sh);
   };
-  material.customProgramCacheKey = () => 'dim' + strength;
+  material.customProgramCacheKey = () => `dim${strength}s${snow}w${wet}`;
   return material;
 }
 
@@ -210,6 +259,7 @@ totalEmissiveRadiance += wGlow;`)
       .replace('#include <opaque_fragment>', `outgoingLight *= 1.0 - uDim * 0.5 * (1.0 - focus);
 #include <opaque_fragment>`);
     patchEdge(sh);
+    patchWeather(sh, 1, 0.6);
   };
   m.customProgramCacheKey = () => 'mfw-building';
   return m;
@@ -217,8 +267,8 @@ totalEmissiveRadiance += wGlow;`)
 
 /** Simple lit material with the dim patch. */
 export function litMaterial(color, opts = {}) {
-  const { dimStrength = 0.6, ...rest } = opts;
-  return patchDim(new THREE.MeshStandardMaterial({ color, roughness: 0.9, metalness: 0, ...rest }), dimStrength);
+  const { dimStrength = 0.6, snow = 0.9, wet = 1, ...rest } = opts;
+  return patchDim(new THREE.MeshStandardMaterial({ color, roughness: 0.9, metalness: 0, ...rest }), dimStrength, { snow, wet });
 }
 
 /** River water: dark, slightly glossy, with drifting sheen lines and warm night reflections. */
@@ -249,10 +299,13 @@ export function createWaterMaterial() {
   return m;
 }
 
-/** Sky dome: soft day gradient / deep navy night with stars. */
+/** Sky dome: gradient + sun glow + stars, all driven by the atmosphere uniforms. */
 export function createSkyMaterial() {
   return new THREE.ShaderMaterial({
-    uniforms: { uNight: U.uNight, uTime: U.uTime },
+    uniforms: {
+      uNight: U.uNight, uTime: U.uTime, uSkyTop: U.uSkyTop, uSkyHor: U.uSkyHor,
+      uSunDir: U.uSunDir, uSunGlowCol: U.uSunGlowCol, uSunGlow: U.uSunGlow, uStars: U.uStars,
+    },
     side: THREE.BackSide,
     depthWrite: false,
     fog: false,
@@ -260,25 +313,26 @@ export function createSkyMaterial() {
       varying vec3 vDir;
       void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); gl_Position.z = gl_Position.w; }`,
     fragmentShader: /* glsl */ `
-      uniform float uNight; uniform float uTime; varying vec3 vDir;
+      uniform float uNight; uniform float uTime; uniform vec3 uSkyTop; uniform vec3 uSkyHor;
+      uniform vec3 uSunDir; uniform vec3 uSunGlowCol; uniform float uSunGlow; uniform float uStars;
+      varying vec3 vDir;
       ${HASH}
       void main(){
-        float h = clamp(vDir.y, -0.2, 1.0);
-        vec3 dayTop = vec3(0.50, 0.60, 0.70), dayHor = vec3(0.87, 0.84, 0.79);
-        vec3 nTop = vec3(0.012, 0.02, 0.045), nHor = vec3(0.07, 0.095, 0.16);
-        float g = pow(smoothstep(-0.02, 0.55, h), 0.75);
-        vec3 day = mix(dayHor, dayTop, g);
-        vec3 night = mix(nHor, nTop, g);
-        vec3 c = mix(day, night, uNight);
-        // warm glow low on the horizon at night (city light), soft sun haze by day
-        c += vec3(0.16, 0.09, 0.04) * uNight * (1.0 - smoothstep(0.0, 0.18, h));
-        // stars
         vec3 d = normalize(vDir);
+        float h = clamp(d.y, -0.2, 1.0);
+        float g = pow(smoothstep(-0.02, 0.55, h), 0.75);
+        vec3 c = mix(uSkyHor, uSkyTop, g);
+        // sun: a wide warm wash low on the horizon toward the sun + a soft disc
+        float sd = max(dot(d, normalize(uSunDir)), 0.0);
+        float horizon = 1.0 - smoothstep(0.0, 0.42, h);
+        c += uSunGlowCol * uSunGlow * (pow(sd, 6.0) * 0.55 * (0.35 + horizon) + pow(sd, 64.0) * 0.6 + pow(sd, 900.0) * 2.0);
+        // city glow on the horizon at night
+        c += vec3(0.16, 0.09, 0.04) * uNight * (1.0 - smoothstep(0.0, 0.18, h));
         vec3 cell = floor(d * 220.0);
         float s = h13(cell);
         float tw = 0.6 + 0.4 * sin(uTime * 1.5 + s * 40.0);
         float star = step(0.9965, s) * smoothstep(0.08, 0.35, h) * tw;
-        c += vec3(0.85, 0.88, 1.0) * star * uNight * 0.9;
+        c += vec3(0.85, 0.88, 1.0) * star * uStars * 0.9;
         gl_FragColor = vec4(c, 1.0);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
@@ -286,27 +340,33 @@ export function createSkyMaterial() {
   });
 }
 
-/** Distant mountain silhouettes. Colour by height, atmospheric haze baked in. */
+/** Distant mountain silhouettes. Colour by height, haze from the current fog colour, rim light at dawn / dusk. */
 export function createMountainMaterial(layer) {
   return new THREE.ShaderMaterial({
-    uniforms: { uNight: U.uNight, uLayer: { value: layer } },
+    uniforms: { uNight: U.uNight, uLayer: { value: layer }, uFogColor: U.uFogColor, uMountain: U.uMountain, uSnow: U.uSnow, uSunGlowCol: U.uSunGlowCol, uSunGlow: U.uSunGlow, uSunDir: U.uSunDir },
     fog: false,
     vertexShader: /* glsl */ `
-      attribute float aH; varying float vH; varying float vY;
-      void main(){ vH = aH; vY = position.y; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+      attribute float aH; varying float vH; varying float vY; varying vec3 vW;
+      void main(){ vH = aH; vY = position.y; vW = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
     fragmentShader: /* glsl */ `
-      uniform float uNight; uniform float uLayer; varying float vH; varying float vY;
+      uniform float uNight; uniform float uLayer; uniform vec3 uFogColor; uniform vec3 uMountain; uniform float uSnow;
+      uniform vec3 uSunGlowCol; uniform float uSunGlow; uniform vec3 uSunDir;
+      varying float vH; varying float vY; varying vec3 vW;
       void main(){
         float t = clamp(vY / 1500.0, 0.0, 1.0);
-        vec3 dayFar = vec3(0.50, 0.56, 0.63), dayNear = vec3(0.40, 0.45, 0.49);
-        vec3 nFar = vec3(0.05, 0.07, 0.12), nNear = vec3(0.025, 0.035, 0.065);
-        vec3 base = mix(mix(dayNear, dayFar, uLayer), mix(nNear, nFar, uLayer), uNight);
-        vec3 hazeDay = vec3(0.86, 0.83, 0.78), hazeNight = vec3(0.07, 0.095, 0.16);
-        vec3 haze = mix(hazeDay, hazeNight, uNight);
-        vec3 c = mix(haze, base, 0.3 + 0.7 * pow(t, 0.7));
-        // snow caps on the high Alps
-        float snow = smoothstep(0.78, 0.92, vY / max(vH, 1.0)) * smoothstep(1100.0, 1500.0, vH);
-        c = mix(c, mix(vec3(0.94, 0.94, 0.95), vec3(0.2, 0.24, 0.33), uNight), snow * 0.85);
+        vec3 base = uMountain * mix(0.82, 1.08, uLayer);
+        vec3 c = mix(uFogColor, base, (0.3 + 0.7 * pow(t, 0.7)) * mix(1.0, 0.55, uLayer));
+        // snow caps on the high peaks (more in snowy weather)
+        float capStart = mix(0.8, 0.45, uSnow);
+        float snow = smoothstep(capStart, capStart + 0.14, vY / max(vH, 1.0)) * smoothstep(mix(1100.0, 500.0, uSnow), mix(1500.0, 800.0, uSnow), vH);
+        vec3 snowCol = mix(vec3(0.94, 0.94, 0.95), vec3(0.2, 0.24, 0.33), uNight);
+        snowCol = mix(snowCol, uFogColor, 0.25 * uLayer);
+        c = mix(c, snowCol, snow * 0.85);
+        // alpenglow: peaks facing the low sun pick up its colour
+        vec2 toSun = normalize(uSunDir.xz + 1e-4);
+        vec2 fromCity = normalize(vW.xz - vec2(380.0, -200.0));
+        float facing = smoothstep(-0.2, 0.9, -dot(fromCity, toSun));
+        c += uSunGlowCol * uSunGlow * facing * smoothstep(0.35, 1.0, vY / max(vH, 1.0)) * 0.35;
         gl_FragColor = vec4(c, 1.0);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>

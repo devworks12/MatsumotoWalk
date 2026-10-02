@@ -7,6 +7,7 @@ export class Ambience {
     this.ctx = null;
     this.enabled = false;
     this.night = false;
+    this.weather = 'clear';
     this.timer = null;
   }
 
@@ -45,7 +46,7 @@ export class Ambience {
 
   _chirp() {
     const ctx = this.ctx;
-    if (!ctx || !this.enabled) return;
+    if (!ctx || !this.enabled || this.weather !== 'clear') return;
     const now = ctx.currentTime;
     const o = ctx.createOscillator();
     const g = ctx.createGain();
@@ -84,8 +85,11 @@ export class Ambience {
   _apply() {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
-    this.noiseGain.gain.setTargetAtTime(this.enabled ? (this.night ? 0.016 : 0.03) : 0, t, 0.6);
-    this.filter.frequency.setTargetAtTime(this.night ? 320 : 700, t, 0.8);
+    const rain = this.weather === 'rain', snow = this.weather === 'snow';
+    // rain: a broad hiss; snow: an almost silent, muffled town
+    const gain = rain ? 0.075 : snow ? 0.008 : this.night ? 0.016 : 0.03;
+    this.noiseGain.gain.setTargetAtTime(this.enabled ? gain : 0, t, 0.8);
+    this.filter.frequency.setTargetAtTime(rain ? 2600 : snow ? 240 : this.night ? 320 : 700, t, 0.8);
   }
 
   setEnabled(on) {
@@ -98,6 +102,11 @@ export class Ambience {
 
   setNight(night) {
     this.night = night;
+    this._apply();
+  }
+
+  setWeather(w) {
+    this.weather = w;
     this._apply();
   }
 }
