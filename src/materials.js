@@ -117,10 +117,12 @@ float focus = (length(vCenter - uFocus.xz) < 0.6) ? uFocus.y : 0.0;
     if (type == 2) {
       // 蔵造り: white plaster, namako (diagonal lattice) base, small shuttered windows
       if (y < 1.6) {
-        float a = fract((u + y) * 1.3), b = fract((u - y) * 1.3);
+        // なまこ壁: dark square tiles set diagonally, raised white plaster joints (~25 cm grid)
+        float a = fract((u + y) * 2.9), b = fract((u - y) * 2.9);
         float l = min(min(a, 1.0 - a), min(b, 1.0 - b));
-        float line = 1.0 - smoothstep(0.06, 0.12, l);
-        diffuseColor.rgb = mix(vec3(0.17, 0.18, 0.19), vec3(0.9, 0.88, 0.84), line);
+        float nw = fwidth((u + y) * 2.9);
+        float line = mix(1.0 - smoothstep(0.07, 0.13 + nw, l), 0.3, smoothstep(0.3, 0.7, nw));
+        diffuseColor.rgb = mix(vec3(0.26, 0.27, 0.28), vec3(0.88, 0.86, 0.82), line);
       } else if (y < 1.85) {
         diffuseColor.rgb *= 0.45;
       }
@@ -128,10 +130,17 @@ float focus = (length(vCenter - uFocus.xz) < 0.6) ? uFocus.y : 0.0;
       if (cu < 0.7 && y > H * 0.58 && y < H * 0.58 + 1.2) { wMask = 1.0; lit = step(h13(vec3(face, seed, 1.0)), 0.55); }
       if (cu < faceW * 0.3 && y > 0.2 && y < 2.4 && edge > 0.8) { ground = 1.0; }
     } else if (type == 3) {
-      // 町家: dark timber slats, lantern-lit ground floor
-      float slat = step(0.5, fract(u / 0.15));
+      // 町家: dark timber slats, a fine 格子 (koshi) lattice over the lantern-lit ground floor
+      float sq = u / 0.15, sw = fwidth(sq);
+      float slat = mix(smoothstep(0.5 - sw, 0.5 + sw, fract(sq)), 0.5, smoothstep(0.25, 0.6, sw));
       diffuseColor.rgb *= 0.82 + 0.18 * slat;
-      if (y > 0.3 && y < 2.4 && edge > 0.7) ground = 1.0;
+      if (y > 0.3 && y < 2.4 && edge > 0.7) {
+        // anti-aliased lattice: fades to its average brightness where it would shimmer
+        float kq = u / 0.16, kw = fwidth(kq);
+        float koshi = mix(smoothstep(0.42 - kw, 0.42 + kw, fract(kq)), 0.58, smoothstep(0.25, 0.6, kw));
+        ground = koshi;
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.16, 0.12, 0.09), 1.0 - koshi);
+      }
       float cu = fract(u / 2.4);
       if (y > 3.4 && y < 4.6 && cu > 0.2 && cu < 0.8 && edge > 0.7) { wMask = 1.0; lit = step(h13(vec3(floor(u / 2.4), face, seed)), 0.5); }
     } else {
@@ -148,7 +157,34 @@ float focus = (length(vCenter - uFocus.xz) < 0.6) ? uFocus.y : 0.0;
         vec3 wid = vec3(floor(u / bw), floor((y - 0.2) / fl), face + seed);
         lit = step(h13(wid), litRatio);
       }
-      if (y > 0.3 && y < 3.3 && edge > 0.9) ground = 1.0;
+      // floor slab lines give every block a sense of scale
+      float slab = 1.0 - step(0.06, fract((y - 0.2) / fl) * fl);
+      if (y > 3.6 && y < H - 0.8) diffuseColor.rgb *= 1.0 - slab * 0.18;
+      // ground floor: glass shopfront / rolling shutter / wall with a door, plus a fascia sign band
+      float gv = type == 1 ? 0.1 : h13(vec3(seed, face, 11.0)); // restaurants always show a lit shopfront
+      if (y > 0.3 && y < 3.0 && edge > 0.9) {
+        if (gv < 0.62) {
+          float mullion = step(0.06, fract(u / 2.2)) * step(0.05, fract((y - 0.3) / 2.7));
+          ground = mullion;
+          diffuseColor.rgb *= mix(0.35, 1.0, mullion);
+        } else if (gv < 0.82) {
+          float rq = y / 0.09, rw = fwidth(rq);
+          float rib = 0.82 + 0.18 * mix(smoothstep(0.5 - rw, 0.5 + rw, fract(rq)), 0.5, smoothstep(0.25, 0.6, rw));
+          diffuseColor.rgb = vec3(0.58, 0.59, 0.6) * rib;
+        } else {
+          float door = step(abs(u - faceW * 0.5), 0.6) * step(y, 2.3);
+          ground = door;
+        }
+      }
+      if (y > 3.0 && y < 3.75 && edge > 0.5 && gv < 0.9) {
+        vec3 signs[4] = vec3[4](vec3(0.15, 0.16, 0.18), vec3(0.11, 0.15, 0.26), vec3(0.42, 0.14, 0.1), vec3(0.86, 0.83, 0.76));
+        int si = int(floor(h13(vec3(seed, face, 13.0)) * 3.99));
+        diffuseColor.rgb = signs[si];
+        float letters = step(0.55, h13(vec3(floor(u / 0.55), face, seed))) * step(0.25, fract((y - 3.0) / 0.75)) * step(fract((y - 3.0) / 0.75), 0.75);
+        float lb = step(1.2, edge);
+        wGlow += letters * lb * mix(vec3(1.0, 0.9, 0.75), vec3(1.0, 0.7, 0.4), float(si == 3)) * 0.9 * uNight * mix(1.0, 0.6, uPov);
+        diffuseColor.rgb = mix(diffuseColor.rgb, si == 3 ? vec3(0.2) : vec3(0.9, 0.88, 0.82), letters * lb * 0.6);
+      }
     }
     float shopFront = (type == 1 || type == 2 || type == 3) ? 1.0 : 0.0;
     float groundLit = shopFront > 0.5 ? step(h13(vec3(seed, face, 5.0)), 0.92) : step(h13(vec3(seed, face, 9.0)), 0.35);

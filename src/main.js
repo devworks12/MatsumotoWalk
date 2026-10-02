@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { Stage } from './scene.js';
 import { City } from './city.js';
 import { Props } from './props.js';
+import { StreetLife } from './streetlife.js';
 import { Traffic } from './traffic.js';
 import { ShopLayer } from './restaurants.js';
 import { RoadGraph } from './routing.js';
@@ -65,6 +66,7 @@ class App {
     const steps = [
       ...this.city.steps(),
       ['Planting trees…', () => { this.props = new Props(this.city, this.restaurants); this.props.build(); }],
+      ['Hanging noren…', () => { this.street = new StreetLife(this.city, this.restaurants); this.street.build(); }],
       ['Waking up the streets…', () => { this.traffic = new Traffic(this.city); this.traffic.build(); }],
       ['Lighting the restaurants…', () => {
         this.shops = new ShopLayer(this.stage, this.restaurants, document.getElementById('labels'));
@@ -264,6 +266,7 @@ class App {
     this.camDist = camDist;
     this.city.update(dt, this.camera, camDist);
     this.props.updateSignals(dt);
+    this.street.update(camDist, U.uPov.value);
     this.traffic.update(dt);
     this.shops.update(dt, this.camera, { pov: this.director.inTour, dimShaft: this.director.inTour });
     this.routeLine.update(dt, camDist, U.uPov.value);

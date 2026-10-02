@@ -242,8 +242,8 @@ export class ShopLayer {
       this.shaft.scale.set(it.scale, it.y, it.scale);
       this.shaft.material.uniforms.uAlpha.value = this.selAmt * (opts.dimShaft ? 0.3 : 1);
       const k = (t * 0.6) % 1;
-      this.pulse.scale.setScalar(1 + k * 9 * Math.sqrt(it.scale));
-      this.pulse.material.opacity = (1 - k) * 0.8 * this.selAmt;
+      this.pulse.scale.setScalar(1 + k * (opts.pov ? 2.2 : 9 * Math.sqrt(it.scale)));
+      this.pulse.material.opacity = (1 - k) * (opts.pov ? 0.45 : 0.8) * this.selAmt;
     } else if (this.shaft.visible) {
       this.selAmt = damp(this.selAmt, 0, 6, dt);
       this.shaft.material.uniforms.uAlpha.value = this.selAmt;

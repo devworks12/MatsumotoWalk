@@ -184,7 +184,7 @@ export class Props {
     [poles, heads, pools].forEach((m) => { m.computeBoundingSphere(); this.group.add(m); });
     pools.renderOrder = 1;
     onNightChange((t) => {
-      headMat.color.setRGB(0.36 + 2.6 * t, 0.36 + 1.75 * t, 0.37 + 0.85 * t);
+      headMat.color.setRGB(0.36 + 1.7 * t, 0.36 + 1.15 * t, 0.37 + 0.55 * t);
       pools.visible = t > 0.02;
     });
     this.poolMat = poolMat;
@@ -295,6 +295,6 @@ export class Props {
     awnings.computeBoundingSphere();
     awnings.castShadow = true;
     this.group.add(blades, awnings);
-    onNightChange((t) => signMat.color.setScalar(0.85 + t * 1.5));
+    onNightChange((t) => signMat.color.setRGB(0.85 + t * 0.75, 0.82 + t * 0.6, 0.76 + t * 0.4));
   }
 }
