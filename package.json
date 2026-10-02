@@ -1,0 +1,15 @@
+{
+  "name": "matsumoto-food-walk",
+  "version": "1.0.0",
+  "description": "MATSUMOTO FOOD WALK — 松本駅周辺を3Dのミニチュア都市として探索し、駅からお店までの道のりを体験するWebサイト",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/serve.mjs 5173",
+    "data": "node scripts/generate-data.mjs",
+    "check": "node scripts/check.mjs",
+    "build": "node scripts/generate-data.mjs && node scripts/check.mjs"
+  },
+  "engines": { "node": ">=18" },
+  "license": "MIT"
+}
